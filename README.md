@@ -12,14 +12,14 @@
 - [ ] Provide Windows-safe vector index fallback when FAISS is unavailable
 - [x] Ensure embedding dimension consistency across mock and OpenAI modes
 - [x] Deduplicate connections and harden stable unique ID generation
-- [ ] Expose retrieved citations in chat responses (names, companies, links)
-- [ ] Add filters in UI sidebar (company, role, location) and sorting
+- [x] Expose retrieved citations in chat responses (names, companies, links)
+- [x] Add filters in UI sidebar (company, role, location) and sorting
 - [ ] Integrate dynamic suggested queries from ChatBot into UI
 - [ ] Export query results to CSV (selected or all matches)
 - [ ] Add unit tests for DataProcessor, VectorStore, and ChatBot search paths
 - [ ] Add logging and user-facing error messages with remediation tips
 - [ ] Support ingesting LinkedIn Data Archive ZIP (auto-locate Connections.csv)
-- [ ] Improve connections list search UX with fielded and highlighted matches
+- [x] Improve connections list search UX with fielded and highlighted matches
 - [ ] Add ability to save/load multiple datasets and switch between them
 - [ ] Pass chat history to LLM for multi-turn context when generating answers
 - [ ] Ensure complete app functionality across ingest, retrieval, chat, and persistence
