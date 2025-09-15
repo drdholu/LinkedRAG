@@ -1,5 +1,7 @@
 **LinkedRAG** is a RAG app that allows users to upload their LinkedIn connections data and interact with it through natural language queries. The system processes CSV files exported from LinkedIn, creates vector embeddings of the connection information, and LLM models to answer questions about the user's professional network.
 
+![UI image](./images/ui.png)
+
 ## TODO
 
 - [x] Add local model option
