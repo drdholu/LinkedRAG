@@ -1,14 +1,17 @@
-TODO
+**LinkedRAG** is a RAG app that allows users to upload their LinkedIn connections data and interact with it through natural language queries. The system processes CSV files exported from LinkedIn, creates vector embeddings of the connection information, and LLM models to answer questions about the user's professional network.
 
-- [ ] Add robust CSV schema mapping for LinkedIn exports (auto-detect common column names)
-- [ ] Parse and normalize dates in Connected On; support recent/most-recent queries
+## TODO
+
+- [x] Add local model option
+- [x] Add robust CSV schema mapping for LinkedIn exports (auto-detect common column names)
+- [x] Parse and normalize dates in Connected On; support recent/most-recent queries
 - [ ] Add optional enrichment from LinkedIn profile URLs with rate limiting and caching
 - [ ] Extract and store additional fields (location, industry, headline) when available
 - [ ] Improve hiring intent detection with heuristic signals beyond embeddings
 - [ ] Persist FAISS index and processed connections to disk; add load on startup
 - [ ] Provide Windows-safe vector index fallback when FAISS is unavailable
-- [ ] Ensure embedding dimension consistency across mock and OpenAI modes
-- [ ] Deduplicate connections and harden stable unique ID generation
+- [x] Ensure embedding dimension consistency across mock and OpenAI modes
+- [x] Deduplicate connections and harden stable unique ID generation
 - [ ] Expose retrieved citations in chat responses (names, companies, links)
 - [ ] Add filters in UI sidebar (company, role, location) and sorting
 - [ ] Integrate dynamic suggested queries from ChatBot into UI

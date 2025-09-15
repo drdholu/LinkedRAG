@@ -20,12 +20,23 @@ if 'chatbot' not in st.session_state:
 load_dotenv()
 
 st.set_page_config(
-    page_title="LinkedIn Connections RAG Chatbot",
+    page_title="LinkedRAG",
     page_icon="💼",
     layout="wide"
 )
 
-st.title("💼 LinkedIn Connections RAG Chatbot")
+# Try to auto-load previous index and data
+if st.session_state.vector_store is None:
+    try:
+        _vs = VectorStore()
+        if _vs.load_from_disk():
+            st.session_state.vector_store = _vs
+            st.session_state.connections_data = _vs.connections_data
+            st.session_state.chatbot = ChatBot(_vs)
+    except Exception:
+        pass
+
+st.title("💼 LinkedRAG")
 st.markdown("Upload your LinkedIn connections data and ask questions about your network!")
 
 # Sidebar for data upload and management
@@ -52,17 +63,24 @@ with st.sidebar:
                 st.dataframe(df.head(), use_container_width=True)
             
             # Embedding mode selection
+            embedding_modes = ["openai", "ollama", "mock"]
+            default_mode = os.getenv("EMBEDDINGS_MODE", "openai")
+            default_index = embedding_modes.index(default_mode) if default_mode in embedding_modes else 0
             embedding_mode = st.selectbox(
                 "🔧 Embedding Mode",
-                ["openai", "mock"],
-                index=0 if os.getenv("EMBEDDINGS_MODE", "openai") == "openai" else 1,
-                help="Choose OpenAI for production or Mock for testing without API quota"
+                embedding_modes,
+                index=default_index,
+                help="Choose OpenAI, local Ollama, or Mock for testing"
             )
             
             # Process data button
             if st.button("🔄 Process Data & Create Embeddings", type="primary"):
-                # Set embedding mode environment variable
+                # Set embedding mode and chat backend environment variables
                 os.environ["EMBEDDINGS_MODE"] = embedding_mode
+                if embedding_mode == "ollama":
+                    os.environ["CHAT_MODE"] = "ollama"
+                elif embedding_mode == "openai":
+                    os.environ["CHAT_MODE"] = "openai"
                 
                 with st.spinner("Processing connections and creating embeddings..."):
                     try:
@@ -74,6 +92,8 @@ with st.sidebar:
                         
                         if embedding_mode == "mock":
                             st.info("ℹ️ Using mock embeddings for testing. Results will be simulated.")
+                        elif embedding_mode == "ollama":
+                            st.info("🖥️ Using local Ollama for embeddings and chat. Ensure Ollama is running and models are pulled.")
                         
                         vector_store.create_embeddings(processed_data)
                         
@@ -158,11 +178,11 @@ else:
         st.markdown("**Quick Questions:**")
         query_templates = [
             "Who in my network is currently hiring?",
-            "Who works at Google?",
-            "Who has experience in artificial intelligence?",
-            "Who are my connections in San Francisco?",
-            "Who works in software engineering?",
-            "Who are my most recent connections?",
+            # "Who works at Google?",
+            # "Who has experience in artificial intelligence?",
+            # "Who are my connections in San Francisco?",
+            # "Who works in software engineering?",
+            # "Who are my most recent connections?",
             "Who works at startups?",
             "Who has marketing experience?"
         ]

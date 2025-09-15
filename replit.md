@@ -1,4 +1,4 @@
-# LinkedIn Connections RAG Chatbot
+# LinkedRAG
 
 ## Overview
 
@@ -31,21 +31,3 @@ Preferred communication style: Simple, everyday language.
 - **Query Analysis**: Processes user questions to determine optimal search strategy
 - **Similarity Search**: Uses FAISS to find most relevant connections based on vector similarity
 - **Context Generation**: Formats retrieved connection data for GPT model consumption
-- **Response Generation**: Uses GPT-5 model with system prompts tailored for LinkedIn connection queries
-
-## External Dependencies
-
-### AI/ML Services
-- **OpenAI API**: GPT-5 model for chat responses and text-embedding-3-large for vector embeddings
-- **FAISS**: Facebook's library for efficient similarity search and clustering of dense vectors
-
-### Data Processing
-- **Pandas**: DataFrame operations for CSV processing and data manipulation
-- **NumPy**: Numerical operations for vector handling and FAISS integration
-
-### Web Framework
-- **Streamlit**: Full-stack web application framework for the user interface
-
-### Configuration
-- **Environment Variables**: OpenAI API key management through environment variables
-- **File Handling**: Support for UTF-8 and Latin-1 encoded CSV files from LinkedIn exports

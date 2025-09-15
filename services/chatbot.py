@@ -3,38 +3,36 @@ from openai import OpenAI
 from typing import List, Dict, Any
 import json
 import re
+import requests
 
 class ChatBot:
     """RAG-powered chatbot for querying LinkedIn connections"""
     
     def __init__(self, vector_store):
+        # Chat backends: openai, ollama, mock
+        self.chat_mode = os.getenv("CHAT_MODE", "openai").lower()
         # the newest OpenAI model is "gpt-5" which was released August 7, 2025.
         # do not change this unless explicitly requested by the user
         self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         self.vector_store = vector_store
         self.model = "gpt-5"
-        self.use_mock = getattr(vector_store, 'embeddings_mode', 'openai') == 'mock'
+        self.use_mock = self.chat_mode == 'mock'
+        # Ollama config
+        self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip('/')
+        self.ollama_model = os.getenv("OLLAMA_CHAT_MODEL", "llama3.1")
         
         # System prompt for the chatbot
         self.system_prompt = """You are a helpful assistant that answers questions about LinkedIn connections.
         You will be provided with relevant connection information from a user's LinkedIn network.
         
         Instructions:
-        1. Answer questions based only on the provided connection data
-        2. Be specific and mention names, companies, and positions when relevant
-        3. If asking about hiring, look for keywords like "hiring", "recruiting", "open positions" in positions/companies
-        4. For company searches, find exact or partial matches
-        5. For skill-based searches, look at job titles and positions
-        6. If no relevant connections are found, say so clearly
-        7. Format your responses in a helpful, conversational manner
-        8. Always provide specific names and details when available
-        
-        Connection data format:
-        - full_name: Person's full name
-        - company: Current company
-        - position: Job title/position
-        - email: Email address (if available)
-        - connected_on: When you connected (if available)
+        1. Answer strictly based on the provided connection data (do not invent facts).
+        2. Return specific names, companies, positions, and connected dates when available.
+        3. If asking about hiring, prioritize roles like manager, director, recruiter, HR.
+        4. For company queries, list the top matches. For general queries, list the most relevant connections.
+        5. Output up to 5 results as a concise bulleted list, one per line: "Name — Company — Position (Connected: YYYY-MM-DD)".
+        6. If no relevant connections are found, clearly say so.
+        7. Do not include information outside the provided context.
         """
     
     def get_response(self, user_query: str) -> str:
@@ -49,8 +47,8 @@ class ChatBot:
             # Create context from search results
             context = self._create_context(search_results, user_query)
             
-            # Generate response
-            response = self._generate_response(user_query, context)
+            # Generate response (include connections for citations)
+            response = self._generate_response(user_query, context, search_results)
             
             return response
             
@@ -169,20 +167,32 @@ class ChatBot:
         conn = connections[0]
         return f"I found {conn['full_name']} at {conn.get('company', 'their company')} who might be relevant to your query."
     
-    def _generate_response(self, query: str, context: str) -> str:
-        """Generate response using OpenAI or mock"""
+    def _generate_response(self, query: str, context: str, connections: List[Dict[str, Any]]) -> str:
+        """Generate response using selected backend and append citations."""
         # If using mock mode, generate deterministic response
         if self.use_mock:
-            # Extract connections from the context for mock response
-            relevant_connections = self._get_relevant_connections(query)
-            return self._generate_mock_response(query, relevant_connections)
-        
-        # Use OpenAI for response generation
+            answer = self._generate_mock_response(query, connections)
+            citations = self._format_citations(connections)
+            return f"{answer}\n\n{citations}" if citations else answer
+
+        # Build messages once
         messages = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
         ]
+
+        if self.chat_mode == 'ollama':
+            try:
+                answer = self._generate_with_ollama(messages)
+                citations = self._format_citations(connections)
+                return f"{answer}\n\n{citations}" if citations else answer
+            except Exception as e:
+                # Fallback to mock on failure
+                if connections:
+                    return self._generate_mock_response(query, connections)
+                raise Exception(f"Error generating response with Ollama: {str(e)}")
         
+        # Default: OpenAI
         try:
             response = self.openai_client.chat.completions.create(
                 model=self.model,
@@ -190,15 +200,46 @@ class ChatBot:
                 max_tokens=1000,
                 temperature=0.7
             )
-            
-            return response.choices[0].message.content
-            
+            answer = response.choices[0].message.content
+            citations = self._format_citations(connections)
+            return f"{answer}\n\n{citations}" if citations else answer
         except Exception as e:
-            # Fallback to mock response if OpenAI fails
-            relevant_connections = self._get_relevant_connections(query)
-            if relevant_connections:
-                return self._generate_mock_response(query, relevant_connections)
+            if connections:
+                return self._generate_mock_response(query, connections)
             raise Exception(f"Error generating response: {str(e)}")
+
+    def _generate_with_ollama(self, messages: List[Dict[str, str]]) -> str:
+        """Generate chat response using local Ollama server."""
+        url = f"{self.ollama_base_url}/api/chat"
+        payload = {
+            "model": self.ollama_model,
+            "messages": messages
+        }
+        resp = requests.post(url, json=payload, timeout=120)
+        resp.raise_for_status()
+        data = resp.json()
+        # Ollama chat may return either a streaming format (not used here) or final message
+        if isinstance(data, dict):
+            # Non-streaming final response
+            if 'message' in data and isinstance(data['message'], dict) and 'content' in data['message']:
+                return data['message']['content']
+            if 'response' in data:
+                return data['response']
+        raise Exception("Unexpected Ollama response format")
+
+    def _format_citations(self, connections: List[Dict[str, Any]]) -> str:
+        if not connections:
+            return ""
+        lines = ["Sources:"]
+        for conn in connections[:5]:
+            name = conn.get('full_name', 'Unknown')
+            company = conn.get('company', '')
+            url = conn.get('profile_url', '')
+            if url:
+                lines.append(f"- {name} — {company} — {url}")
+            else:
+                lines.append(f"- {name} — {company}")
+        return "\n".join(lines)
     
     def _handle_no_results(self, query: str) -> str:
         """Handle cases where no relevant connections are found"""
