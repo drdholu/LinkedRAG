@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import os
+from dotenv import load_dotenv
 from services.data_processor import DataProcessor
 from services.vector_store import VectorStore
 from services.chatbot import ChatBot
@@ -15,6 +16,8 @@ if 'vector_store' not in st.session_state:
     st.session_state.vector_store = None
 if 'chatbot' not in st.session_state:
     st.session_state.chatbot = None
+
+load_dotenv()
 
 st.set_page_config(
     page_title="LinkedIn Connections RAG Chatbot",
@@ -77,7 +80,7 @@ with st.sidebar:
                         # Verify vector store was successfully initialized
                         if vector_store.index is None or not processed_data:
                             st.error("❌ Failed to process data. Please check your CSV file and try again.")
-                            return
+                            st.stop()
                         
                         # Initialize chatbot
                         chatbot = ChatBot(vector_store)
