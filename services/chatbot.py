@@ -5,11 +5,15 @@ import json
 import re
 import requests
 import logging
+from utils.helpers import setup_logger
 
 class ChatBot:
     """RAG-powered chatbot for querying LinkedIn connections"""
     
     def __init__(self, vector_store):
+        # Initialize logger
+        self.logger = setup_logger("LinkedRAG.ChatBot", level=os.getenv("LOG_LEVEL", "INFO"))
+
         # Chat backends: openai, ollama, mock
         self.chat_mode = os.getenv("CHAT_MODE", "openai").lower()
         # the newest OpenAI model is "gpt-5" which was released August 7, 2025.
@@ -41,7 +45,7 @@ class ChatBot:
     def get_response(self, user_query: str, chat_history: List[Dict[str, str]] = None) -> str:
         """Get chatbot response using RAG with conversation context"""
         try:
-            logger.info(f"Processing chat query with history context: {len(chat_history or [])} previous messages")
+            self.logger.info(f"Processing chat query with history context: {len(chat_history or [])} previous messages")
 
             # Analyze query to determine search strategy
             search_results = self._get_relevant_connections(user_query)
@@ -55,11 +59,11 @@ class ChatBot:
             # Generate response with chat history context
             response = self._generate_response(user_query, context, search_results, chat_history)
 
-            logger.info("Chatbot response generated with history context")
+            self.logger.info("Chatbot response generated with history context")
             return response
 
         except Exception as e:
-            logger.error(f"Error in get_response: {str(e)}", exc_info=True)
+            self.logger.error(f"Error in get_response: {str(e)}", exc_info=True)
             return f"I'm sorry, I encountered an error while processing your question: {str(e)}"
     
     def _get_relevant_connections(self, query: str) -> List[Dict[str, Any]]:
@@ -187,7 +191,7 @@ class ChatBot:
     
     def _generate_response(self, query: str, context: str, connections: List[Dict[str, Any]], chat_history: List[Dict[str, str]] = None) -> str:
         """Generate response using selected backend with chat history context and append citations."""
-        logger.debug(f"Generating response with {len(chat_history or [])} chat history messages")
+        self.logger.debug(f"Generating response with {len(chat_history or [])} chat history messages")
 
         # If using mock mode, generate deterministic response
         if self.use_mock:
@@ -306,7 +310,7 @@ class ChatBot:
             return "\n".join(response_parts)
 
         except Exception as e:
-            logger.warning(f"Error in _handle_no_results: {str(e)}")
+            self.logger.warning(f"Error in _handle_no_results: {str(e)}")
             return "I couldn't find any connections matching your query. Please try rephrasing your question or check if your data has been processed correctly."
 
     def _extract_topic_from_query(self, query: str) -> str:
@@ -341,8 +345,7 @@ class ChatBot:
         if not self.vector_store.connections_data:
             return []
 
-        logger = logging.getLogger("LinkedRAG.ChatBot")
-        logger.debug("Generating dynamic query suggestions")
+        self.logger.debug("Generating dynamic query suggestions")
 
         suggestions = []
 
@@ -383,11 +386,11 @@ class ChatBot:
             suggestions.append("Who works at Fortune 500 companies?")
             suggestions.append("Show me entrepreneurs and founders")
 
-            logger.debug(f"Generated {len(suggestions)} dynamic suggestions")
+            self.logger.debug(f"Generated {len(suggestions)} dynamic suggestions")
             return suggestions[:12]  # Limit to 12 suggestions
 
         except Exception as e:
-            logger.warning(f"Error generating suggestions: {str(e)}")
+            self.logger.warning(f"Error generating suggestions: {str(e)}")
             # Return basic fallback suggestions
             return [
                 "Who in my network is currently hiring?",

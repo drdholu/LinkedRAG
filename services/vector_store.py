@@ -13,11 +13,15 @@ import hashlib
 import random
 import time
 from openai import RateLimitError, APIStatusError
+from utils.helpers import setup_logger
 
 class VectorStore:
     """Handles vector embeddings and similarity search using FAISS"""
     
     def __init__(self):
+        # Initialize logger
+        self.logger = setup_logger("LinkedRAG.VectorStore", level=os.getenv("LOG_LEVEL", "INFO"))
+
         # the newest OpenAI model is "gpt-5" which was released August 7, 2025.
         # do not change this unless explicitly requested by the user
         self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -83,59 +87,60 @@ class VectorStore:
 
 
     def create_embeddings(self, connections: List[Dict[str, Any]]):
-        """Create embeddings for all connections and build FAISS index"""
+        """Create embeddings for all connections and build FAISS index with consistent vector dimensions."""
         try:
             # Check for empty data
             if not connections:
                 st.warning("⚠️ No connections data to process. Please check your CSV file.")
+                self.logger.warning("No connections data to process")
                 return
-            
+
             # Extract searchable texts
             texts = [conn['searchable_text'] for conn in connections]
-            
+
             if not texts:
                 st.warning("⚠️ No valid text data found in connections.")
+                self.logger.warning("No valid text data found in connections")
                 return
-            
-            # Create embeddings in batches to handle rate limits
-            embeddings = []
-            batch_size = 100
-            auto_fallback_triggered = False
-            
+
             progress_bar = st.progress(0)
-            total_batches = (len(texts) + batch_size - 1) // batch_size
-            
-            for i in range(0, len(texts), batch_size):
-                batch_texts = texts[i:i + batch_size]
-                try:
-                    batch_embeddings = self._get_embeddings_batch(batch_texts)
-                    embeddings.extend(batch_embeddings)
-                except Exception as e:
-                    error_msg = str(e).lower()
-                    if ("insufficient_quota" in error_msg or "invalid" in error_msg or 
-                        "rate limit" in error_msg) and not auto_fallback_triggered:
-                        # Auto-fallback to mock embeddings
-                        st.warning("🔄 API issue detected. Automatically switching to mock embeddings to continue processing...")
-                        self.embeddings_mode = "mock"
-                        auto_fallback_triggered = True
-                        batch_embeddings = self._get_embeddings_batch(batch_texts)
-                        embeddings.extend(batch_embeddings)
-                    else:
-                        raise e
-                
-                # Update progress
-                progress = min((i + batch_size) / len(texts), 1.0)
-                progress_bar.progress(progress)
-            
+
+            # Always compute embeddings using a single mode for the entire dataset
+            original_mode = self.embeddings_mode
+            used_mode = original_mode
+
+            def compute_all(texts_list, target_mode):
+                return self._compute_embeddings_all(texts_list, target_mode, progress_bar)
+
+            try:
+                embeddings = compute_all(texts, original_mode)
+            except Exception as e:
+                error_msg = str(e).lower()
+                if ("insufficient_quota" in error_msg or "invalid" in error_msg or "rate limit" in error_msg):
+                    st.warning("🔄 API issue detected. Recomputing all embeddings in mock mode to continue processing...")
+                    used_mode = "mock"
+                    embeddings = compute_all(texts, used_mode)
+                else:
+                    raise
+
             progress_bar.empty()
-            
+
             # Convert to numpy array and set dimension dynamically
-            embeddings_array = np.array(embeddings, dtype=np.float32)
-            
+            if not embeddings or not embeddings[0] or not isinstance(embeddings[0], (list, tuple)):
+                raise Exception("Received invalid embeddings format")
+
+            expected_dim = len(embeddings[0])
+            # Validate all dimensions match before creating the array
+            for vec in embeddings:
+                if len(vec) != expected_dim:
+                    raise Exception("Embedding dimension mismatch detected after computation")
+
+            embeddings_array = np.asarray(embeddings, dtype=np.float32)
+
             # Set dimension from first embedding if not set
             if self.dimension is None:
-                self.dimension = len(embeddings[0])
-            
+                self.dimension = expected_dim
+
             # Build index (FAISS if available, otherwise numpy fallback)
             if FAISS_AVAILABLE:
                 self.index = faiss.IndexFlatIP(self.dimension)  # Inner Product (cosine similarity)
@@ -148,17 +153,17 @@ class VectorStore:
                 norms = np.linalg.norm(embeddings_array, axis=1, keepdims=True)
                 norms[norms == 0] = 1.0
                 self.index = embeddings_array / norms
-            
+
             # Store connection data
             self.connections_data = connections
             self.connection_ids = [conn['id'] for conn in connections]
-            self.index_embeddings_mode = self.embeddings_mode
-            
+            self.index_embeddings_mode = used_mode
+
             st.success(f"✅ Created embeddings for {len(connections)} connections")
 
             # Persist to disk
             self._save_to_disk()
-            
+
         except Exception as e:
             raise Exception(f"Error creating embeddings: {str(e)}")
     
@@ -172,9 +177,17 @@ class VectorStore:
             pass
     
     def _get_cache_key(self, text: str) -> str:
-        """Generate cache key for text"""
+        """Generate cache key for text that is specific to mode, model, and dimension."""
         text_hash = hashlib.md5(text.encode()).hexdigest()
-        return f"{self.embedding_model}_{text_hash}"
+        mode = self.embeddings_mode
+        if mode == "ollama":
+            model_id = self.ollama_embedding_model
+        elif mode == "mock":
+            model_id = f"mock-{self.dimension or 0}"
+        else:
+            model_id = self.embedding_model
+        dim_part = str(self.dimension or "unk")
+        return f"{mode}:{model_id}:{dim_part}:{text_hash}"
     
     def _get_mock_embedding(self, text: str, dimension: int = 384) -> List[float]:
         """Generate deterministic mock embedding for text"""
@@ -260,6 +273,40 @@ class VectorStore:
 
         # All should be filled now
         return [e for e in embeddings if e is not None]  # type: ignore
+
+    def _compute_embeddings_all(self, texts: List[str], target_mode: str, progress_bar) -> List[List[float]]:
+        """Compute embeddings for all texts using a single target mode, ensuring consistent vector dimensions."""
+        original_mode = self.embeddings_mode
+        try:
+            self.embeddings_mode = target_mode
+            embeddings: List[List[float]] = []
+            batch_size = 100
+            expected_dim: int | None = None
+
+            for i in range(0, len(texts), batch_size):
+                batch_texts = texts[i:i + batch_size]
+                batch_embeddings = self._get_embeddings_batch(batch_texts)
+                if not batch_embeddings:
+                    continue
+                if expected_dim is None:
+                    expected_dim = len(batch_embeddings[0])
+                # Validate dimension consistency within batch
+                for vec in batch_embeddings:
+                    if len(vec) != expected_dim:
+                        raise Exception("Embedding dimension mismatch within batch")
+                embeddings.extend(batch_embeddings)
+                # Update progress
+                progress = min((i + batch_size) / len(texts), 1.0)
+                try:
+                    progress_bar.progress(progress)
+                except Exception:
+                    pass
+
+            if expected_dim is None:
+                raise Exception("No embeddings were generated")
+            return embeddings
+        finally:
+            self.embeddings_mode = original_mode
 
     def _get_ollama_embeddings_parallel(self, texts: List[str]) -> List[List[float]]:
         """Get embeddings from local Ollama server in parallel to speed up large datasets."""

@@ -71,7 +71,7 @@ with st.sidebar:
 
             # Display data preview
             with st.expander("📋 Data Preview"):
-                st.dataframe(df.head(), use_container_width=True)
+                st.dataframe(df.head(), width='stretch')
             
             # Embedding mode selection
             embedding_modes = ["openai", "ollama", "mock"]
@@ -503,7 +503,7 @@ else:
                     
                     if display_columns:
                         table_df = display_df[display_columns].rename(columns=column_mapping)
-                        st.dataframe(table_df, use_container_width=True, hide_index=True)
+                        st.dataframe(table_df, width='stretch', hide_index=True)
                     
             else:  # List view (default)
                 for conn in current_page_connections:
