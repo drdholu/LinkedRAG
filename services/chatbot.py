@@ -4,6 +4,7 @@ from typing import List, Dict, Any
 import json
 import re
 import requests
+import logging
 
 class ChatBot:
     """RAG-powered chatbot for querying LinkedIn connections"""
@@ -24,7 +25,7 @@ class ChatBot:
         # System prompt for the chatbot
         self.system_prompt = """You are a helpful assistant that answers questions about LinkedIn connections.
         You will be provided with relevant connection information from a user's LinkedIn network.
-        
+
         Instructions:
         1. Answer strictly based on the provided connection data (do not invent facts).
         2. Return specific names, companies, positions, and connected dates when available.
@@ -33,26 +34,32 @@ class ChatBot:
         5. Output up to 5 results as a concise bulleted list, one per line: "Name — Company — Position (Connected: YYYY-MM-DD)".
         6. If no relevant connections are found, clearly say so.
         7. Do not include information outside the provided context.
+        8. Use the conversation history to provide better context and avoid repeating information already discussed.
+        9. Reference previous questions and answers when relevant to maintain conversation continuity.
         """
     
-    def get_response(self, user_query: str) -> str:
-        """Get chatbot response using RAG"""
+    def get_response(self, user_query: str, chat_history: List[Dict[str, str]] = None) -> str:
+        """Get chatbot response using RAG with conversation context"""
         try:
+            logger.info(f"Processing chat query with history context: {len(chat_history or [])} previous messages")
+
             # Analyze query to determine search strategy
             search_results = self._get_relevant_connections(user_query)
-            
+
             if not search_results:
-                return self._handle_no_results(user_query)
-            
+                return self._handle_no_results(user_query, chat_history)
+
             # Create context from search results
             context = self._create_context(search_results, user_query)
-            
-            # Generate response (include connections for citations)
-            response = self._generate_response(user_query, context, search_results)
-            
+
+            # Generate response with chat history context
+            response = self._generate_response(user_query, context, search_results, chat_history)
+
+            logger.info("Chatbot response generated with history context")
             return response
-            
+
         except Exception as e:
+            logger.error(f"Error in get_response: {str(e)}", exc_info=True)
             return f"I'm sorry, I encountered an error while processing your question: {str(e)}"
     
     def _get_relevant_connections(self, query: str) -> List[Dict[str, Any]]:
@@ -122,64 +129,85 @@ class ChatBot:
         
         return "\n".join(context_parts)
     
-    def _generate_mock_response(self, query: str, connections: List[Dict[str, Any]]) -> str:
-        """Generate deterministic mock response based on connections"""
+    def _generate_mock_response(self, query: str, connections: List[Dict[str, Any]], chat_history: List[Dict[str, str]] = None) -> str:
+        """Generate deterministic mock response based on connections with conversation context"""
         query_lower = query.lower()
-        
+
         if not connections:
             return "I couldn't find any connections matching your query in the sample data."
-        
+
+        # Add context awareness based on chat history
+        context_aware_response = ""
+        if chat_history and len(chat_history) > 1:
+            previous_queries = [msg['content'] for msg in chat_history if msg['role'] == 'user']
+            if len(previous_queries) > 1:
+                last_query = previous_queries[-2].lower()
+                if "company" in last_query and "google" in query_lower:
+                    context_aware_response = "Since you were asking about companies earlier, "
+                elif "hiring" in last_query and "hiring" in query_lower:
+                    context_aware_response = "Following up on your hiring question, "
+
         # Company-specific queries
         if "google" in query_lower:
             google_conns = [c for c in connections if "google" in c.get('company', '').lower()]
             if google_conns:
                 conn = google_conns[0]
-                return f"I found {conn['full_name']} who works at {conn['company']} as a {conn.get('position', 'team member')}. They were connected on {conn.get('connected_on', 'an unknown date')}."
-        
+                return f"{context_aware_response}I found {conn['full_name']} who works at {conn['company']} as a {conn.get('position', 'team member')}. They were connected on {conn.get('connected_on', 'an unknown date')}."
+
         if "microsoft" in query_lower:
             ms_conns = [c for c in connections if "microsoft" in c.get('company', '').lower()]
             if ms_conns:
                 conn = ms_conns[0]
-                return f"Yes! {conn['full_name']} works at {conn['company']} as a {conn.get('position', 'team member')}."
-        
+                return f"{context_aware_response}Yes! {conn['full_name']} works at {conn['company']} as a {conn.get('position', 'team member')}."
+
         # Hiring queries
         if any(keyword in query_lower for keyword in ['hiring', 'recruit', 'job']):
             hiring_positions = ['manager', 'director', 'recruiter', 'hr']
             hiring_conns = [c for c in connections if any(pos in c.get('position', '').lower() for pos in hiring_positions)]
             if hiring_conns:
                 conn = hiring_conns[0]
-                return f"Based on their role, {conn['full_name']} at {conn.get('company', 'their company')} ({conn.get('position', 'their position')}) might be involved in hiring decisions. You could reach out to them."
+                return f"{context_aware_response}Based on their role, {conn['full_name']} at {conn.get('company', 'their company')} ({conn.get('position', 'their position')}) might be involved in hiring decisions. You could reach out to them."
             return "I don't see any obvious hiring managers in your immediate connections, but you could reach out to engineering managers or directors."
-        
+
         # Engineering/software queries
         if any(keyword in query_lower for keyword in ['engineer', 'software', 'developer', 'programming']):
             eng_conns = [c for c in connections if any(term in c.get('position', '').lower() for term in ['engineer', 'developer', 'software'])]
             if eng_conns:
                 names = [c['full_name'] for c in eng_conns[:3]]
                 companies = [c.get('company', 'Unknown') for c in eng_conns[:3]]
-                return f"I found several software engineers in your network: {', '.join(names)}. They work at {', '.join(set(companies))} respectively."
-        
+                return f"{context_aware_response}I found several software engineers in your network: {', '.join(names)}. They work at {', '.join(set(companies))} respectively."
+
         # General response with first few connections
         if len(connections) >= 2:
             conn1, conn2 = connections[0], connections[1]
-            return f"Based on your connections, I found {conn1['full_name']} at {conn1.get('company', 'their company')} and {conn2['full_name']} at {conn2.get('company', 'their company')} who might be relevant to your query."
-        
+            return f"{context_aware_response}Based on your connections, I found {conn1['full_name']} at {conn1.get('company', 'their company')} and {conn2['full_name']} at {conn2.get('company', 'their company')} who might be relevant to your query."
+
         conn = connections[0]
-        return f"I found {conn['full_name']} at {conn.get('company', 'their company')} who might be relevant to your query."
+        return f"{context_aware_response}I found {conn['full_name']} at {conn.get('company', 'their company')} who might be relevant to your query."
     
-    def _generate_response(self, query: str, context: str, connections: List[Dict[str, Any]]) -> str:
-        """Generate response using selected backend and append citations."""
+    def _generate_response(self, query: str, context: str, connections: List[Dict[str, Any]], chat_history: List[Dict[str, str]] = None) -> str:
+        """Generate response using selected backend with chat history context and append citations."""
+        logger.debug(f"Generating response with {len(chat_history or [])} chat history messages")
+
         # If using mock mode, generate deterministic response
         if self.use_mock:
-            answer = self._generate_mock_response(query, connections)
+            answer = self._generate_mock_response(query, connections, chat_history)
             citations = self._format_citations(connections)
             return f"{answer}\n\n{citations}" if citations else answer
 
-        # Build messages once
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
-        ]
+        # Build messages with conversation context
+        messages = [{"role": "system", "content": self.system_prompt}]
+
+        # Add conversation history for context (limit to last 10 exchanges to avoid token limits)
+        if chat_history:
+            history_limit = 10
+            recent_history = chat_history[-history_limit:] if len(chat_history) > history_limit else chat_history
+
+            for msg in recent_history:
+                messages.append({"role": msg["role"], "content": msg["content"]})
+
+        # Add current context and question
+        messages.append({"role": "user", "content": f"Context:\n{context}\n\nCurrent Question: {query}"})
 
         if self.chat_mode == 'ollama':
             try:
@@ -189,9 +217,9 @@ class ChatBot:
             except Exception as e:
                 # Fallback to mock on failure
                 if connections:
-                    return self._generate_mock_response(query, connections)
+                    return self._generate_mock_response(query, connections, chat_history)
                 raise Exception(f"Error generating response with Ollama: {str(e)}")
-        
+
         # Default: OpenAI
         try:
             response = self.openai_client.chat.completions.create(
@@ -205,7 +233,7 @@ class ChatBot:
             return f"{answer}\n\n{citations}" if citations else answer
         except Exception as e:
             if connections:
-                return self._generate_mock_response(query, connections)
+                return self._generate_mock_response(query, connections, chat_history)
             raise Exception(f"Error generating response: {str(e)}")
 
     def _generate_with_ollama(self, messages: List[Dict[str, str]]) -> str:
@@ -241,51 +269,129 @@ class ChatBot:
                 lines.append(f"- {name} — {company}")
         return "\n".join(lines)
     
-    def _handle_no_results(self, query: str) -> str:
+    def _handle_no_results(self, query: str, chat_history: List[Dict[str, str]] = None) -> str:
         """Handle cases where no relevant connections are found"""
         # Get some general stats to provide helpful info
         try:
             stats = self.vector_store.get_connection_stats()
             companies = self.vector_store.get_all_companies()
-            
+
             response_parts = [
                 "I couldn't find specific connections that match your query."
             ]
-            
+
             if stats:
                 response_parts.append(f"\nYour network includes {stats['total_connections']} connections across {stats['total_companies']} companies.")
-                
+
                 if stats.get('top_companies'):
                     top_companies = [company for company, count in stats['top_companies'][:5]]
                     response_parts.append(f"Your top companies include: {', '.join(top_companies)}.")
-            
+
             response_parts.append("\nTry asking about:")
             response_parts.append("- Specific companies: 'Who works at Google?'")
             response_parts.append("- Job roles: 'Who works in software engineering?'")
             response_parts.append("- General questions: 'Who is hiring?' or 'Show me recent connections'")
-            
+
+            # Add context-aware suggestions based on chat history
+            if chat_history and len(chat_history) > 1:
+                response_parts.append("\nBased on our previous conversation, you might also want to ask:")
+                # Extract topics from previous queries for context
+                previous_queries = [msg['content'] for msg in chat_history if msg['role'] == 'user']
+                if len(previous_queries) > 1:
+                    last_topic = self._extract_topic_from_query(previous_queries[-2])
+                    if last_topic:
+                        response_parts.append(f"- More about {last_topic}")
+                        response_parts.append("- Connections related to your previous search")
+
             return "\n".join(response_parts)
-            
-        except Exception:
+
+        except Exception as e:
+            logger.warning(f"Error in _handle_no_results: {str(e)}")
             return "I couldn't find any connections matching your query. Please try rephrasing your question or check if your data has been processed correctly."
+
+    def _extract_topic_from_query(self, query: str) -> str:
+        """Extract the main topic from a user query for context"""
+        query_lower = query.lower()
+
+        # Company mentions
+        company_patterns = [
+            r'works? at (.+?)(?:\?|$|\.)',
+            r'from (.+?)(?:\?|$|\.)',
+            r'at (.+?)(?:\?|$|\.)',
+            r'in (.+?)(?:\?|$|\.)'
+        ]
+
+        for pattern in company_patterns:
+            match = re.search(pattern, query_lower)
+            if match:
+                return match.group(1).strip()
+
+        # Role/skill mentions
+        if any(keyword in query_lower for keyword in ['engineer', 'developer', 'manager', 'director']):
+            return "technical roles"
+        elif any(keyword in query_lower for keyword in ['marketing', 'sales', 'business']):
+            return "business roles"
+        elif any(keyword in query_lower for keyword in ['hiring', 'recruit', 'job']):
+            return "hiring opportunities"
+
+        return ""
     
     def get_suggested_queries(self) -> List[str]:
         """Get suggested queries based on the data"""
         if not self.vector_store.connections_data:
             return []
-        
-        suggestions = [
-            "Who in my network is currently hiring?",
-            "Show me my most recent connections",
-            "Who works in technology?",
-            "Who are my connections in marketing?"
-        ]
-        
-        # Add company-specific suggestions
-        companies = self.vector_store.get_all_companies()
-        if companies:
-            top_companies = companies[:3]
-            for company in top_companies:
-                suggestions.append(f"Who works at {company}?")
-        
-        return suggestions
+
+        logger = logging.getLogger("LinkedRAG.ChatBot")
+        logger.debug("Generating dynamic query suggestions")
+
+        suggestions = []
+
+        try:
+            # Get network statistics
+            stats = self.vector_store.get_connection_stats()
+            companies = self.vector_store.get_all_companies()
+
+            # Hiring-related queries
+            if stats.get('total_connections', 0) > 0:
+                suggestions.append("Who in my network is currently hiring?")
+                suggestions.append("Show me hiring managers and recruiters")
+
+            # Recent connections
+            suggestions.append("Show me my most recent connections")
+
+            # Company-specific queries
+            if companies:
+                top_companies = companies[:3]
+                for company in top_companies:
+                    suggestions.append(f"Who works at {company}?")
+                    suggestions.append(f"Tell me about my connections at {company}")
+
+            # Role-based queries
+            suggestions.append("Who works in technology or software engineering?")
+            suggestions.append("Who has experience in marketing or sales?")
+            suggestions.append("Show me managers and directors in my network")
+
+            # Location-based if available
+            suggestions.append("Who are my connections in tech startups?")
+
+            # Size-based queries
+            if stats.get('total_connections', 0) > 50:
+                suggestions.append("Show me connections I haven't talked to recently")
+                suggestions.append("Who has changed jobs recently?")
+
+            # Industry-specific
+            suggestions.append("Who works at Fortune 500 companies?")
+            suggestions.append("Show me entrepreneurs and founders")
+
+            logger.debug(f"Generated {len(suggestions)} dynamic suggestions")
+            return suggestions[:12]  # Limit to 12 suggestions
+
+        except Exception as e:
+            logger.warning(f"Error generating suggestions: {str(e)}")
+            # Return basic fallback suggestions
+            return [
+                "Who in my network is currently hiring?",
+                "Show me my most recent connections",
+                "Who works in technology?",
+                "Who has marketing experience?"
+            ]

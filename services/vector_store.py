@@ -42,7 +42,46 @@ class VectorStore:
         self.index_path = os.path.join(self.data_dir, "index.faiss" if FAISS_AVAILABLE else "index.npy")
         self.meta_path = os.path.join(self.data_dir, "meta.pkl")
         self.connections_path = os.path.join(self.data_dir, "connections.pkl")
-    
+
+
+    def load_from_disk(self) -> bool:
+        """Load index, metadata, and connections from disk if available. Returns True on success."""
+        try:
+            if not (os.path.exists(self.meta_path) and os.path.exists(self.connections_path) and os.path.exists(self.index_path)):
+                return False
+            # Load metadata
+            with open(self.meta_path, 'rb') as f:
+                meta = pickle.load(f)
+            self.embedding_model = meta.get('embedding_model', self.embedding_model)
+            self.dimension = meta.get('dimension', self.dimension)
+            self.index_embeddings_mode = meta.get('embeddings_mode', self.embeddings_mode)
+            # Load index
+            if FAISS_AVAILABLE:
+                self.index = faiss.read_index(self.index_path)
+            else:
+                self.index = np.load(self.index_path)
+            # Load connections
+            with open(self.connections_path, 'rb') as f:
+                payload = pickle.load(f)
+                self.connections_data = payload.get('connections', [])
+                self.connection_ids = payload.get('ids', [])
+            return self.index is not None and len(self.connections_data) > 0
+        except Exception:
+            return False
+
+
+    def _load_cache(self) -> Dict[str, List[float]]:
+        """Load embeddings cache from file"""
+        try:
+            os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
+            if os.path.exists(self.cache_file):
+                with open(self.cache_file, 'rb') as f:
+                    return pickle.load(f)
+        except Exception:
+            pass
+        return {}
+
+
     def create_embeddings(self, connections: List[Dict[str, Any]]):
         """Create embeddings for all connections and build FAISS index"""
         try:
@@ -122,17 +161,6 @@ class VectorStore:
             
         except Exception as e:
             raise Exception(f"Error creating embeddings: {str(e)}")
-    
-    def _load_cache(self) -> Dict[str, List[float]]:
-        """Load embeddings cache from file"""
-        try:
-            os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
-            if os.path.exists(self.cache_file):
-                with open(self.cache_file, 'rb') as f:
-                    return pickle.load(f)
-        except Exception:
-            pass
-        return {}
     
     def _save_cache(self):
         """Save embeddings cache to file"""
@@ -383,27 +411,4 @@ class VectorStore:
             # Non-fatal: do not crash app on save failure
             pass
 
-    def load_from_disk(self) -> bool:
-        """Load index, metadata, and connections from disk if available. Returns True on success."""
-        try:
-            if not (os.path.exists(self.meta_path) and os.path.exists(self.connections_path) and os.path.exists(self.index_path)):
-                return False
-            # Load metadata
-            with open(self.meta_path, 'rb') as f:
-                meta = pickle.load(f)
-            self.embedding_model = meta.get('embedding_model', self.embedding_model)
-            self.dimension = meta.get('dimension', self.dimension)
-            self.index_embeddings_mode = meta.get('embeddings_mode', self.embeddings_mode)
-            # Load index
-            if FAISS_AVAILABLE:
-                self.index = faiss.read_index(self.index_path)
-            else:
-                self.index = np.load(self.index_path)
-            # Load connections
-            with open(self.connections_path, 'rb') as f:
-                payload = pickle.load(f)
-                self.connections_data = payload.get('connections', [])
-                self.connection_ids = payload.get('ids', [])
-            return self.index is not None and len(self.connections_data) > 0
-        except Exception:
-            return False
+    

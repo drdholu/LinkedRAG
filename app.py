@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from services.data_processor import DataProcessor
 from services.vector_store import VectorStore
 from services.chatbot import ChatBot
-from utils.helpers import format_connection_display
+from utils.helpers import format_connection_display, setup_logger, log_error_with_context, create_user_friendly_message
 
 # Initialize session state
 if 'chat_history' not in st.session_state:
@@ -19,6 +19,10 @@ if 'chatbot' not in st.session_state:
 
 load_dotenv()
 
+# Initialize logger
+logger = setup_logger("LinkedRAG", level=os.getenv("LOG_LEVEL", "INFO"))
+logger.info("LinkedRAG application started")
+
 st.set_page_config(
     page_title="LinkedRAG",
     page_icon="💼",
@@ -28,13 +32,18 @@ st.set_page_config(
 # Try to auto-load previous index and data
 if st.session_state.vector_store is None:
     try:
+        logger.info("Attempting to auto-load previous session data")
         _vs = VectorStore()
         if _vs.load_from_disk():
             st.session_state.vector_store = _vs
             st.session_state.connections_data = _vs.connections_data
             st.session_state.chatbot = ChatBot(_vs)
-    except Exception:
-        pass
+            logger.info("Successfully auto-loaded previous session data")
+        else:
+            logger.info("No previous session data found to auto-load")
+    except Exception as e:
+        logger.warning(f"Failed to auto-load previous session: {str(e)}")
+        # Don't show error to user for auto-load failures
 
 st.title("💼 LinkedRAG")
 st.markdown("Upload your LinkedIn connections data and ask questions about your network!")
@@ -52,12 +61,14 @@ with st.sidebar:
     
     if uploaded_file is not None:
         try:
+            logger.info(f"Processing uploaded file: {uploaded_file.name}")
             # Process uploaded file
             data_processor = DataProcessor()
             df = data_processor.load_csv(uploaded_file)
-            
+
+            logger.info(f"Successfully loaded {len(df)} connections from CSV")
             st.success(f"✅ Loaded {len(df)} connections")
-            
+
             # Display data preview
             with st.expander("📋 Data Preview"):
                 st.dataframe(df.head(), use_container_width=True)
@@ -75,65 +86,80 @@ with st.sidebar:
             
             # Process data button
             if st.button("🔄 Process Data & Create Embeddings", type="primary"):
+                logger.info(f"Starting data processing with embedding mode: {embedding_mode}")
                 # Set embedding mode and chat backend environment variables
                 os.environ["EMBEDDINGS_MODE"] = embedding_mode
                 if embedding_mode == "ollama":
                     os.environ["CHAT_MODE"] = "ollama"
                 elif embedding_mode == "openai":
                     os.environ["CHAT_MODE"] = "openai"
-                
+
                 with st.spinner("Processing connections and creating embeddings..."):
                     try:
+                        logger.info("Processing connections data")
                         # Process and create embeddings
                         processed_data = data_processor.process_connections(df)
-                        
+                        logger.info(f"Processed {len(processed_data)} connections")
+
                         # Initialize vector store
                         vector_store = VectorStore()
-                        
+
                         if embedding_mode == "mock":
                             st.info("ℹ️ Using mock embeddings for testing. Results will be simulated.")
                         elif embedding_mode == "ollama":
                             st.info("🖥️ Using local Ollama for embeddings and chat. Ensure Ollama is running and models are pulled.")
-                        
+
+                        logger.info("Creating embeddings")
                         vector_store.create_embeddings(processed_data)
-                        
+
                         # Verify vector store was successfully initialized
                         if vector_store.index is None or not processed_data:
-                            st.error("❌ Failed to process data. Please check your CSV file and try again.")
+                            error_msg = "Failed to process data. Please check your CSV file and try again."
+                            logger.error(error_msg)
+                            st.error(f"❌ {error_msg}")
                             st.stop()
-                        
+
                         # Initialize chatbot
                         chatbot = ChatBot(vector_store)
-                        
+                        logger.info("Chatbot initialized successfully")
+
                         # Store in session state
                         st.session_state.connections_data = processed_data
                         st.session_state.vector_store = vector_store
                         st.session_state.chatbot = chatbot
-                        
+
                         if embedding_mode == "mock":
                             st.success("✅ Data processed with mock embeddings! You can now test the chatbot functionality.")
                         else:
                             st.success("✅ Data processed and embeddings created!")
+                        logger.info("Data processing completed successfully")
                         st.rerun()
-                        
+
                     except Exception as e:
-                        error_msg = str(e)
-                        if "insufficient_quota" in error_msg.lower():
-                            st.error("❌ OpenAI API Quota Exhausted")
-                            st.markdown("""
-                            **Your OpenAI API key has insufficient quota.** Here's what you can do:
-                            
-                            1. **Check your OpenAI billing**: Visit [OpenAI Platform](https://platform.openai.com/account/billing) to add credits
-                            2. **Try Mock Mode**: Select "mock" from the dropdown above to test the app without using OpenAI
-                            3. **Rotate API Key**: Use a different OpenAI API key with available quota
-                            
-                            Mock mode will simulate embeddings and let you test all features except the actual AI responses.
-                            """)
-                        else:
-                            st.error(f"❌ Error processing data: {error_msg}")
-        
+                        logger.error(f"Error during data processing: {str(e)}", exc_info=True)
+                        error_info = create_user_friendly_message(e, "processing LinkedIn connections data")
+
+                        # Display user-friendly error
+                        st.error(f"❌ {error_info['title']}")
+                        st.markdown(f"**{error_info['message']}")
+
+                        # Show remediation steps
+                        if error_info['remediation']:
+                            st.markdown("**What you can do:**")
+                            for step in error_info['remediation']:
+                                st.markdown(step)
+
         except Exception as e:
-            st.error(f"❌ Error loading CSV: {str(e)}")
+            logger.error(f"Error loading CSV file: {str(e)}", exc_info=True)
+            error_info = create_user_friendly_message(e, "loading CSV file")
+
+            st.error(f"❌ {error_info['title']}")
+            st.markdown(f"**{error_info['message']}")
+
+            if error_info['remediation']:
+                st.markdown("**What you can do:**")
+                for step in error_info['remediation']:
+                    st.markdown(step)
     
     # Display connection stats and filters if data is loaded
     if st.session_state.connections_data is not None:
@@ -225,28 +251,56 @@ else:
         st.subheader("💬 Ask Questions About Your Network")
         
         # Dynamic suggested queries from chatbot
-        st.markdown("**Quick Questions:**")
+        st.markdown("**💡 Quick Questions:**")
+        st.markdown("*Click any question below to get started:*")
+
         try:
             suggested_queries = st.session_state.chatbot.get_suggested_queries()
-            if not suggested_queries:
-                # Fallback to static templates
+            logger.debug(f"Generated {len(suggested_queries)} dynamic query suggestions")
+
+            if suggested_queries and len(suggested_queries) > 0:
+                st.info(f"📊 Based on your {len(st.session_state.connections_data)} connections, here are some tailored questions:")
+            else:
+                logger.info("No dynamic suggestions available, using fallback queries")
+                # Fallback to context-aware static templates
                 suggested_queries = [
                     "Who in my network is currently hiring?",
-                    "Who works at startups?",
-                    "Who has marketing experience?"
+                    "Show me my most recent connections",
+                    "Who works in technology companies?",
+                    "Who has experience in marketing?"
                 ]
-        except:
+        except Exception as e:
+            logger.warning(f"Error getting dynamic suggestions: {str(e)}")
+            # Fallback to context-aware static templates
             suggested_queries = [
                 "Who in my network is currently hiring?",
-                "Who works at startups?", 
-                "Who has marketing experience?"
+                "Show me my most recent connections",
+                "Who works in technology companies?",
+                "Who has experience in marketing?"
             ]
-        
-        cols = st.columns(min(4, len(suggested_queries)))
-        for i, template in enumerate(suggested_queries[:8]):  # Limit to 8 suggestions
-            with cols[i % len(cols)]:
-                if st.button(template, key=f"template_{i}"):
-                    st.session_state.current_query = template
+
+        # Display suggestions in organized columns
+        cols_per_row = 2
+        suggestions_to_show = suggested_queries[:8]  # Limit to 8 suggestions
+
+        for i in range(0, len(suggestions_to_show), cols_per_row):
+            cols = st.columns(cols_per_row)
+            for j in range(cols_per_row):
+                if i + j < len(suggestions_to_show):
+                    template = suggestions_to_show[i + j]
+                    with cols[j]:
+                        if st.button(template, key=f"template_{i+j}", use_container_width=True):
+                            st.session_state.current_query = template
+                            st.rerun()
+
+        # Add a "More Suggestions" expander for additional queries
+        if len(suggested_queries) > 8:
+            with st.expander("🔍 More Question Ideas"):
+                st.markdown("**Additional questions you can ask:**")
+                for i, template in enumerate(suggested_queries[8:], 9):
+                    if st.button(template, key=f"template_extra_{i}"):
+                        st.session_state.current_query = template
+                        st.rerun()
         
         # Chat input
         user_query = st.chat_input("Ask about your LinkedIn connections...")
@@ -257,16 +311,28 @@ else:
             del st.session_state.current_query
         
         if user_query:
+            logger.info(f"Processing chat query: {user_query[:100]}...")
             # Add user message to chat history
             st.session_state.chat_history.append({"role": "user", "content": user_query})
-            
-            # Get chatbot response
+
+            # Get chatbot response with chat history context
             with st.spinner("Thinking..."):
                 try:
-                    response = st.session_state.chatbot.get_response(user_query)
+                    # Pass chat history for better context
+                    response = st.session_state.chatbot.get_response(user_query, st.session_state.chat_history)
                     st.session_state.chat_history.append({"role": "assistant", "content": response})
+                    logger.info("Chatbot response generated successfully with history context")
                 except Exception as e:
-                    st.error(f"Error getting response: {str(e)}")
+                    logger.error(f"Error getting chatbot response: {str(e)}", exc_info=True)
+                    error_info = create_user_friendly_message(e, "generating chatbot response")
+
+                    st.error(f"❌ {error_info['title']}")
+                    st.markdown(f"**{error_info['message']}")
+
+                    if error_info['remediation']:
+                        st.markdown("**What you can do:**")
+                        for step in error_info['remediation']:
+                            st.markdown(step)
         
         # Display chat history
         for message in st.session_state.chat_history:
