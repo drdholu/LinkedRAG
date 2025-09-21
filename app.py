@@ -29,6 +29,37 @@ st.set_page_config(
     layout="wide"
 )
 
+# Custom CSS for better chat UI
+st.markdown("""
+<style>
+    /* Make chat messages more readable */
+    .stChatMessage {
+        margin-bottom: 1rem;
+    }
+    
+    /* Better spacing for chat input */
+    .stChatInput {
+        margin-top: 1rem;
+    }
+    
+    /* Improve suggestion buttons */
+    .stButton > button {
+        height: auto;
+        white-space: normal;
+        text-align: left;
+        padding: 0.5rem 1rem;
+    }
+    
+    /* Better contrast for conversation history */
+    .conversation-header {
+        background-color: #f0f2f6;
+        padding: 0.5rem;
+        border-radius: 0.5rem;
+        margin-bottom: 1rem;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # Try to auto-load previous index and data
 if st.session_state.vector_store is None:
     try:
@@ -37,8 +68,9 @@ if st.session_state.vector_store is None:
         if _vs.load_from_disk():
             st.session_state.vector_store = _vs
             st.session_state.connections_data = _vs.connections_data
-            st.session_state.chatbot = ChatBot(_vs)
-            logger.info("Successfully auto-loaded previous session data")
+            _chatbot = ChatBot(_vs)
+            st.session_state.chatbot = _chatbot
+            logger.info(f"Successfully auto-loaded previous session data with backend: {_chatbot.chat_mode}")
         else:
             logger.info("No previous session data found to auto-load")
     except Exception as e:
@@ -46,7 +78,7 @@ if st.session_state.vector_store is None:
         # Don't show error to user for auto-load failures
 
 st.title("💼 LinkedRAG")
-st.markdown("Upload your LinkedIn connections data and ask questions about your network!")
+st.markdown("Your AI assistant for exploring and connecting with your LinkedIn network! Upload your connections and start chatting about who you know.")
 
 # Sidebar for data upload and management
 with st.sidebar:
@@ -121,7 +153,7 @@ with st.sidebar:
 
                         # Initialize chatbot
                         chatbot = ChatBot(vector_store)
-                        logger.info("Chatbot initialized successfully")
+                        logger.info(f"Chatbot initialized successfully with backend: {chatbot.chat_mode}")
 
                         # Store in session state
                         st.session_state.connections_data = processed_data
@@ -163,6 +195,16 @@ with st.sidebar:
     
     # Display connection stats and filters if data is loaded
     if st.session_state.connections_data is not None:
+        # Show chat status in sidebar too
+        if st.session_state.chatbot:
+            backend = st.session_state.chatbot.chat_mode.upper()
+            if backend == "OLLAMA":
+                st.success(f"✅ Chat Ready: Local LLM")
+            elif backend == "OPENAI":
+                st.info(f"✅ Chat Ready: OpenAI")
+            else:
+                st.warning(f"✅ Chat Ready: Mock Mode")
+        
         st.header("📈 Network Stats")
         data = st.session_state.connections_data
         
@@ -226,21 +268,22 @@ with st.sidebar:
 
 # Main content area
 if st.session_state.chatbot is None:
-    st.info("👆 Please upload your LinkedIn connections CSV file and process the data to start chatting!")
+    st.info("👆 Ready to get started? Upload your LinkedIn connections CSV file above and I'll help you explore your network!")
     
     # Show example CSV format
-    st.subheader("📝 Expected CSV Format")
+    st.subheader("📝 What Data Do I Need?")
     st.markdown("""
-    Your LinkedIn connections CSV should contain columns like:
-    - **First Name**: Contact's first name
-    - **Last Name**: Contact's last name 
-    - **Email Address**: Contact's email (if available)
-    - **Company**: Current company
-    - **Position**: Job title/position
-    - **Connected On**: Date connected
-    - **URL**: LinkedIn profile URL
+    I work best with your LinkedIn connections CSV export, which should include:
+    - **First Name** & **Last Name**: Your connections' names
+    - **Email Address**: Contact emails (when available)
+    - **Company**: Where they work
+    - **Position**: Their job titles
+    - **Connected On**: When you connected
+    - **URL**: Their LinkedIn profile links
     
-    You can export this data from LinkedIn by going to Settings & Privacy > Data Privacy > Get a copy of your data.
+    **How to get this:** Go to LinkedIn → Settings & Privacy → Data Privacy → "Get a copy of your data" → Select "Connections" and export as CSV.
+    
+    Once you upload this, I'll learn about your entire network and be ready to answer questions like "Who do I know at Google?" or "Which of my connections might be hiring?"
     """)
 
 else:
@@ -248,62 +291,119 @@ else:
     tab1, tab2 = st.tabs(["💬 Chat with Network", "👥 Browse Connections"])
     
     with tab1:
-        st.subheader("💬 Ask Questions About Your Network")
+        st.subheader("💬 Chat with Your Network Assistant")
+        
+        # Show backend status
+        if st.session_state.chatbot:
+            backend = st.session_state.chatbot.chat_mode.upper()
+            if backend == "OLLAMA":
+                st.success(f"🖥️ Using Local LLM ({backend})")
+            elif backend == "OPENAI":
+                st.info(f"☁️ Using Cloud LLM ({backend})")
+            else:
+                st.warning(f"🧪 Using Mock Mode ({backend})")
         
         # Dynamic suggested queries from chatbot
-        st.markdown("**💡 Quick Questions:**")
-        st.markdown("*Click any question below to get started:*")
+        st.markdown("**💡 Great questions to get started:**")
+        st.markdown("*Just click on any question below, or type your own!*")
 
         try:
             suggested_queries = st.session_state.chatbot.get_suggested_queries()
             logger.debug(f"Generated {len(suggested_queries)} dynamic query suggestions")
 
             if suggested_queries and len(suggested_queries) > 0:
-                st.info(f"📊 Based on your {len(st.session_state.connections_data)} connections, here are some tailored questions:")
+                st.info(f"🎯 Perfect! I've analyzed your {len(st.session_state.connections_data)} connections and here are some questions I think you'll find interesting:")
             else:
                 logger.info("No dynamic suggestions available, using fallback queries")
                 # Fallback to context-aware static templates
                 suggested_queries = [
-                    "Who in my network is currently hiring?",
-                    "Show me my most recent connections",
-                    "Who works in technology companies?",
-                    "Who has experience in marketing?"
+                    "Who in my network might be hiring?",
+                    "Show me who I've connected with recently",
+                    "Find engineers and developers I know",
+                    "Who has marketing or sales experience?"
                 ]
         except Exception as e:
             logger.warning(f"Error getting dynamic suggestions: {str(e)}")
             # Fallback to context-aware static templates
             suggested_queries = [
-                "Who in my network is currently hiring?",
-                "Show me my most recent connections",
-                "Who works in technology companies?",
-                "Who has experience in marketing?"
+                "Who in my network might be hiring?",
+                "Show me who I've connected with recently",
+                "Find engineers and developers I know",
+                "Who has marketing or sales experience?"
             ]
 
-        # Display suggestions in organized columns
-        cols_per_row = 2
-        suggestions_to_show = suggested_queries[:8]  # Limit to 8 suggestions
-
-        for i in range(0, len(suggestions_to_show), cols_per_row):
-            cols = st.columns(cols_per_row)
-            for j in range(cols_per_row):
-                if i + j < len(suggestions_to_show):
-                    template = suggestions_to_show[i + j]
-                    with cols[j]:
-                        if st.button(template, key=f"template_{i+j}", use_container_width=True):
-                            st.session_state.current_query = template
-                            st.rerun()
-
-        # Add a "More Suggestions" expander for additional queries
-        if len(suggested_queries) > 8:
-            with st.expander("🔍 More Question Ideas"):
-                st.markdown("**Additional questions you can ask:**")
-                for i, template in enumerate(suggested_queries[8:], 9):
-                    if st.button(template, key=f"template_extra_{i}"):
+        # Better organized suggestions with categories
+        with st.container():
+            # Display main suggestions in a more compact way
+            suggestions_to_show = suggested_queries[:6]  # Show fewer but better organized
+            
+            # Create 2 columns for suggestions
+            col1, col2 = st.columns(2)
+            
+            for i, template in enumerate(suggestions_to_show):
+                target_col = col1 if i % 2 == 0 else col2
+                with target_col:
+                    if st.button(f"💡 {template}", key=f"template_{i}", use_container_width=True, help="Click to ask this question"):
                         st.session_state.current_query = template
                         st.rerun()
+
+        # More suggestions in a cleaner expander
+        if len(suggested_queries) > 6:
+            with st.expander("🔍 More Question Ideas", expanded=False):
+                remaining_suggestions = suggested_queries[6:12]  # Show up to 6 more
+                
+                for i, template in enumerate(remaining_suggestions):
+                    if st.button(f"• {template}", key=f"template_extra_{i+6}", use_container_width=True):
+                        st.session_state.current_query = template
+                        st.rerun()
+                        
+                if len(suggested_queries) > 12:
+                    st.caption(f"💡 And {len(suggested_queries) - 12} more possibilities! Just ask naturally.")
         
-        # Chat input
-        user_query = st.chat_input("Ask about your LinkedIn connections...")
+        st.markdown("")  # Add some spacing
+        
+        # Chat input at the top
+        user_query = st.chat_input("Ask me anything about your network... Who do you want to connect with?", key="main_chat_input")
+        
+        # Display chat history with newest messages at the top (if any)
+        if st.session_state.chat_history:
+            # Clear chat button (small, unobtrusive)
+            col1, col2 = st.columns([5, 1])
+            with col2:
+                if st.button("🗑️ Clear", help="Clear conversation history", key="clear_chat"):
+                    st.session_state.chat_history = []
+                    st.rerun()
+            
+            st.markdown("---")
+            
+            # Chat container with better spacing
+            with st.container():
+                # Group messages into conversation pairs (user question + assistant response)
+                conversation_pairs = []
+                for i in range(0, len(st.session_state.chat_history), 2):
+                    if i + 1 < len(st.session_state.chat_history):
+                        # Complete pair (user + assistant)
+                        user_msg = st.session_state.chat_history[i]
+                        assistant_msg = st.session_state.chat_history[i + 1]
+                        conversation_pairs.append((user_msg, assistant_msg))
+                    else:
+                        # Only user message (response pending)
+                        user_msg = st.session_state.chat_history[i]
+                        conversation_pairs.append((user_msg, None))
+                
+                # Display pairs in reverse order (newest conversation first)
+                for user_msg, assistant_msg in reversed(conversation_pairs):
+                    # Show user message first
+                    with st.chat_message("user"):
+                        st.markdown(f"**You:** {user_msg['content']}")
+                    
+                    # Then show assistant response (if it exists)
+                    if assistant_msg:
+                        with st.chat_message("assistant"):
+                            st.markdown(assistant_msg['content'])
+                    
+                    # Add spacing between conversation pairs
+                    st.markdown("")
         
         # Handle template selection
         if 'current_query' in st.session_state:
@@ -316,12 +416,16 @@ else:
             st.session_state.chat_history.append({"role": "user", "content": user_query})
 
             # Get chatbot response with chat history context
-            with st.spinner("Thinking..."):
+            with st.spinner("🤔 Thinking..."):
                 try:
                     # Pass chat history for better context
                     response = st.session_state.chatbot.get_response(user_query, st.session_state.chat_history)
                     st.session_state.chat_history.append({"role": "assistant", "content": response})
                     logger.info("Chatbot response generated successfully with history context")
+                    
+                    # Force a rerun to show the new message immediately
+                    st.rerun()
+                    
                 except Exception as e:
                     logger.error(f"Error getting chatbot response: {str(e)}", exc_info=True)
                     error_info = create_user_friendly_message(e, "generating chatbot response")
@@ -333,11 +437,6 @@ else:
                         st.markdown("**What you can do:**")
                         for step in error_info['remediation']:
                             st.markdown(step)
-        
-        # Display chat history
-        for message in st.session_state.chat_history:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
     
     with tab2:
         st.markdown("### 🔍 Explore Your Professional Network")
@@ -545,6 +644,6 @@ else:
 # Footer
 st.markdown("---")
 st.markdown(
-    "💡 **Tip:** This chatbot uses RAG (Retrieval-Augmented Generation) to find relevant connections "
-    "and provide accurate answers about your LinkedIn network."
+    "💡 **How it works:** I use smart search technology (RAG) to understand your questions and find exactly the right people in your network. "
+    "Think of me as your personal LinkedIn network assistant with perfect memory!"
 )

@@ -12,6 +12,7 @@ import pickle
 import hashlib
 import random
 import time
+import requests
 from openai import RateLimitError, APIStatusError
 from utils.helpers import setup_logger
 
@@ -346,7 +347,16 @@ class VectorStore:
             if self.index_embeddings_mode:
                 self.embeddings_mode = self.index_embeddings_mode
             # Get query embedding
-            query_embedding = self._get_embeddings_batch([query])[0]
+            try:
+                query_embedding = self._get_embeddings_batch([query])[0]
+            except Exception as e:
+                # Graceful fallback if Ollama is unavailable at query-time
+                if (self.index_embeddings_mode == "ollama"):
+                    self.logger.warning("Ollama unavailable for query-time embeddings; falling back to mock embedding with index dimension")
+                    mock_dim = self.dimension if self.dimension else 384
+                    query_embedding = self._get_mock_embedding(query, dimension=mock_dim)
+                else:
+                    raise
             # Restore mode
             self.embeddings_mode = original_mode
             query_vector = np.array([query_embedding], dtype=np.float32)
